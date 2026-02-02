@@ -2,7 +2,7 @@
 
 ## Clone PhyGO Project
 
-`git clone https://github.com/htil/phygo.git`
+`git clone https://github.com/michaeladeleke2/phygo
 
 ---
 
@@ -42,7 +42,6 @@ https://www.youtube.com/watch?v=APOPm01BVrk
 
 ## Install Libraries
 
-If a `requirements.txt` file is provided:
 
 `python -m pip install -r requirements.txt`
 
@@ -50,7 +49,7 @@ If a `requirements.txt` file is provided:
 
 ## Install Infineon Radar SDK (ifxradarsdk)
 
-Install the wheel provided with the project or by your lab:
+Install the wheel provided with the project
 
 `python -m pip install path/to/ifxradarsdk-*.whl`
 
