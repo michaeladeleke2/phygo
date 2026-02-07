@@ -2,7 +2,7 @@
 
 ## Clone PhyGO Project
 
-`git clone https://github.com/michaeladeleke2/phygo'
+`git clone https://github.com/michaeladeleke2/phygo`
 
 ---
 
