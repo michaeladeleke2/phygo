@@ -57,6 +57,17 @@ except Exception:
     ErrorFrameAcquisitionFailed = Exception
 
 
+def get_resource_path(relative_path):
+    """Get absolute path to resource, works for dev and for PyInstaller."""
+    try:
+        # PyInstaller creates a temp folder and stores path in _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        # Running in normal Python environment - go up from scripts/ to phygo/
+        base_path = Path(__file__).resolve().parents[1]
+    return Path(base_path) / relative_path
+
+
 # -----------------------------
 # Streaming Worker
 # -----------------------------
@@ -101,8 +112,8 @@ class SpectrogramCanvas(FigureCanvas):
         self.setParent(parent)
 
         self.ax.set_title("Live Micro-Doppler Spectrogram")
-        self.ax.set_xlabel("Time (s)")
-        self.ax.set_ylabel("Velocity (m/s)")
+        self.ax.set_xlabel("Time bins")
+        self.ax.set_ylabel("Frequency bins")
 
         self.im = None
         self.cbar = None
@@ -1350,10 +1361,9 @@ class ControlRobotTab(QtWidgets.QWidget):
 class MainWindow(QtWidgets.QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("SensDS v1.0")
+        self.setWindowTitle("PhyGO Radar GUI")
 
-        repo_root = Path(__file__).resolve().parents[1]
-        configs_dir = repo_root / "configs"
+        configs_dir = get_resource_path("configs")
         chirp_cfg_path = configs_dir / "cfg_simo_chirp.json"
         seq_cfg_path = configs_dir / "cfg_simo_seq.json"
 
@@ -1381,7 +1391,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Header
         header = QtWidgets.QHBoxLayout()
-        self.lbl_title = QtWidgets.QLabel("SensDS v1.0")
+        self.lbl_title = QtWidgets.QLabel("PhyGO Radar")
         self.lbl_title.setStyleSheet("font-size:18px; font-weight:600;")
         header.addWidget(self.lbl_title)
         header.addStretch(1)
