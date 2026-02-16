@@ -1,0 +1,49 @@
+name: Build Windows Executable
+
+on:
+  push:
+    tags:
+      - 'v*'  # Trigger on version tags like v1.0.0
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+    
+    - name: Build with PyInstaller
+      run: |
+        cd scripts
+        pyinstaller radar_gui_windows.spec
+    
+    - name: Create ZIP archive
+      run: |
+        cd scripts/dist
+        powershell Compress-Archive -Path PhyGO -DestinationPath PhyGO-Windows.zip
+    
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: PhyGO-Windows
+        path: scripts/dist/PhyGO-Windows.zip
+    
+    - name: Create Release
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: scripts/dist/PhyGO-Windows.zip
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
