@@ -1,8 +1,28 @@
 # processing_utils.py
+# CRITICAL: backend must NOT be forced to Agg when running the PyQt GUI.
+import matplotlib
 import time
-import numpy as np
+
+# If the GUI already set a backend (Qt5Agg), don't override it.
+# If running headless (batch scripts), allow Agg.
+try:
+    matplotlib.get_backend()  # triggers backend init if needed
+except Exception:
+    pass
+
+# Only force Agg if a GUI backend was not already selected.
+# (Qt5Agg/QtAgg/etc mean we're in GUI mode)
+_backend = str(matplotlib.get_backend()).lower()
+if ("qt" not in _backend) and ("macosx" not in _backend):
+    try:
+        matplotlib.use("Agg")
+    except Exception:
+        pass
+
 import matplotlib.pyplot as plt
 from matplotlib import colors
+import numpy as np
+
 from scipy.signal import butter, lfilter
 
 
@@ -141,7 +161,7 @@ def spectrogram(data, duration, prf, mti=False, is_save=None, savename=None):
 def compute_microdoppler_spectrogram_db(data, prf, mti=True):
     """
     NEW: Compute the micro-Doppler spectrogram matrix (in dB) without plotting/saving.
-    This is what we’ll use for LIVE display in the GUI.
+    This is what we'll use for LIVE display in the GUI.
 
     It uses the same math + parameters as spectrogram() so the live display matches
     your saved images as closely as possible.
