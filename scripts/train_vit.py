@@ -189,16 +189,23 @@ def train_model(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 70)
-    print("[PhyGO] Local Transfer Learning (Transformers)")
-    print("=" * 70)
-    print(f"data_dir={data_dir}")
-    print(f"output_dir={output_dir}")
-    print(f"model={model_name}")
-    print(f"epochs={epochs} batch={batch_size} lr={lr} val_subjects={val_subjects}")
-    print("=" * 70)
 
-    print("\n[1/5] Loading processor...")
-    processor = AutoImageProcessor.from_pretrained(model_name)
+    # Check for local bundled model FIRST
+    repo_root = Path(__file__).parent.parent
+    local_model_path = repo_root / "models" / "vit-base-patch16-224"
+    
+    if local_model_path.exists():
+        print("\n[1/5] Using bundled model (offline mode)...")
+        print(f"📦 Loading from: {local_model_path}")
+        print("   ✅ No internet required!")
+        model_to_load = str(local_model_path)
+    else:
+        print("\n[1/5] Bundled model not found...")
+        print(f"📥 Will download from HuggingFace: {model_name}")
+        print("   ⚠️  Requires internet connection")
+        model_to_load = model_name
+    
+    processor = AutoImageProcessor.from_pretrained(model_to_load)
 
     print("\n[2/5] Splitting subjects (no leakage)...")
     train_subj, val_subj = split_subjects(data_dir, val_subjects=val_subjects, seed=seed)
@@ -221,7 +228,7 @@ def train_model(
 
     print("\n[4/5] Loading pretrained model...")
     model = AutoModelForImageClassification.from_pretrained(
-        model_name,
+        model_to_load,
         num_labels=num_labels,
         id2label=train_ds.id2label,
         label2id=train_ds.label2id,

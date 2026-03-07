@@ -88,13 +88,27 @@ class RadarStreamWorker(QtCore.QObject):
     def run(self):
         self._running = True
         self.status.emit("Streaming started.")
+        consecutive_errors = 0
+        max_consecutive_errors = 10
+        
         try:
             while self._running:
-                frame_contents = self.manager.device.get_next_frame()
-                frame0 = frame_contents[0]
-                self.frame.emit(frame0)
+                try:
+                    frame_contents = self.manager.device.get_next_frame()
+                    frame0 = frame_contents[0]
+                    self.frame.emit(frame0)
+                    consecutive_errors = 0  # Reset on success
+                    
+                except Exception as e:
+                    consecutive_errors += 1
+                    if consecutive_errors >= max_consecutive_errors:
+                        self.error.emit(f"Too many consecutive errors ({consecutive_errors}), stopping stream")
+                        break
+                    # Continue trying on occasional errors
+                    time.sleep(0.01)
+                    
         except Exception as e:
-            self.error.emit(str(e))
+            self.error.emit(f"Stream error: {str(e)}")
         finally:
             self.status.emit("Streaming stopped.")
             self.finished.emit()
@@ -1816,14 +1830,19 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def on_stop(self):
         if self.worker is not None:
+            self.append_log("⏹ Stopping stream...")
             self.worker.stop()
+        else:
+            self.append_log("⚠️ No active stream to stop")
 
     def on_stream_finished(self):
         self.append_log("✅ Stream worker finished.")
         self.spect_timer.stop()
-        self.thread = None
+        self.worker.deleteLater()
         self.worker = None
-
+        if self.thread is not None:
+            self.thread.deleteLater()
+        self.thread = None
         connected = self.manager.device is not None
         self.btn_start.setEnabled(connected)
         self.btn_stop.setEnabled(False)
@@ -1831,8 +1850,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_record.setEnabled(True)
 
     def on_disconnect(self):
+    # Force stop streaming if still active
         if self.worker is not None:
+            self.append_log("⏹ Force stopping stream before disconnect...")
             self.on_stop()
+            # Wait briefly for cleanup
+            QtCore.QCoreApplication.processEvents()
+            time.sleep(0.2)
 
         try:
             self.manager.close()
