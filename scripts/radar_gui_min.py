@@ -372,7 +372,7 @@ class TrainModelTab(QtWidgets.QWidget):
 
         # Gesture rows
         self.gesture_labels = {}
-        gestures = ["push", "swipe_left", "swipe_right", "swipe_up", "swipe_down", "idle"]
+        gestures = ["idle", "swipe_right", "push"]
         for gesture in gestures:
             row = QtWidgets.QHBoxLayout()
             icon = QtWidgets.QLabel("❌")
@@ -554,7 +554,7 @@ class TrainModelTab(QtWidgets.QWidget):
     def refresh_checklist(self):
         """Scan spectrogram folders and update the checklist"""
         base = REPO_ROOT / "data/train/spectrogram"
-        gestures = ["push", "swipe_left", "swipe_right", "swipe_up", "swipe_down", "idle"]
+        gestures = ["idle", "swipe_right", "push"]
 
         ready_count = 0
         total_samples = 0
@@ -866,6 +866,179 @@ class PredictWorker(QtCore.QObject):
         self.status.emit(f"🎯 Predicted: {label} ({conf*100:.1f}%)")
         self.result.emit(label, conf)
 
+
+# RoboSoccerWorker - SEPARATE CLASS, NOT NESTED
+class RoboSoccerWorker(QtCore.QObject):
+    """Continuous RoboSoccer mode: robot drives forward, responds to gestures in real-time"""
+    status = QtCore.pyqtSignal(str)
+    prediction = QtCore.pyqtSignal(str, float)  # (gesture, confidence)
+    error = QtCore.pyqtSignal(str)
+    finished = QtCore.pyqtSignal()
+
+    def __init__(self, robot, model, processor, labels, cfg_seq, cfg_chirp, 
+                 prediction_interval=0.2, confidence_threshold=0.6):
+        super().__init__()
+        self.robot = robot
+        self.model = model
+        self.processor = processor
+        self.labels = labels
+        self.cfg_seq = cfg_seq
+        self.cfg_chirp = cfg_chirp
+        self.prediction_interval = prediction_interval
+        self.confidence_threshold = confidence_threshold
+        self._running = False
+        self._radar = None
+
+    @QtCore.pyqtSlot()
+    def run(self):
+        self._running = True
+        self.status.emit("🤖 RoboSoccer Mode Starting...")
+        
+        try:
+            # Initialize radar
+            self._radar = InfineonManager.InfineonManager()
+            self._radar.init_device_fmcw(self.cfg_seq, self.cfg_chirp)
+            self.status.emit("📡 Radar initialized")
+            
+            # Get radar parameters
+            params = self._radar.get_params({**self.cfg_chirp, **self.cfg_seq})
+            prf = params['prf']
+            
+            # Turn on LEDs to show robot is active
+            from vex.vex_types import LightType, Color
+            self.robot.led.on(LightType.ALL_LEDS, Color.GREEN)
+            self.status.emit("⚽ RoboSoccer active - swipe right or push to control!")
+            
+            # Warmup frames
+            for _ in range(3):
+                _ = safe_get_next_frame(self._radar.device)
+            
+            # Main loop: continuous prediction
+            while self._running:
+                try:
+                    # Keep robot moving forward continuously
+                    # Restart forward motion each loop to maintain continuous drive
+                    self.robot.move_for(10, 0, wait=False)
+                    
+                    # Capture ~0.2 seconds of data for faster response
+                    n_frames = max(16, int(0.2 / float(self.cfg_seq["frame_repetition_time_s"])))
+                    data = fetch_n_frames(self._radar.device, n_frames)
+                    
+                    # Generate spectrogram
+                    temp_png = REPO_ROOT / "data" / "temp_robosoccer.png"
+                    temp_png.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    duration = data.shape[0] * float(self.cfg_seq["frame_repetition_time_s"])
+                    spectrogram(data, duration=duration, prf=prf, mti=True, 
+                            is_save=True, savename=str(temp_png))
+                    
+                    # Run prediction
+                    gesture, confidence = self._predict(str(temp_png))
+                    self.prediction.emit(gesture, confidence)
+                    
+                    # Execute command if confident enough
+                    if confidence >= self.confidence_threshold:
+                        self._execute_gesture(gesture)
+                    
+                    # Brief pause before next prediction
+                    time.sleep(self.prediction_interval)
+                    
+                except Exception as e:
+                    self.status.emit(f"⚠️ Prediction error: {e}")
+                    time.sleep(0.1)
+                    
+        except Exception as e:
+            self.error.emit(f"RoboSoccer failed: {e}")
+        finally:
+            # Cleanup
+            try:
+                self.robot.stop_all_movement()
+                from vex.vex_types import LightType
+                self.robot.led.off(LightType.ALL_LEDS)
+            except:
+                pass
+            
+            try:
+                if self._radar:
+                    self._radar.close()
+            except:
+                pass
+            
+            self.status.emit("🛑 RoboSoccer stopped")
+            self.finished.emit()
+
+    def _predict(self, png_path):
+        """Run inference on spectrogram"""
+        import torch
+        from PIL import Image
+        
+        image = Image.open(png_path).convert("RGB")
+        inputs = self.processor(images=image, return_tensors="pt")
+        
+        with torch.no_grad():
+            outputs = self.model(**inputs)
+            logits = outputs.logits
+            probs = torch.nn.functional.softmax(logits, dim=-1)[0]
+        
+        idx = int(torch.argmax(probs))
+        conf = float(probs[idx])
+        label = self.labels[idx] if idx < len(self.labels) else f"class_{idx}"
+        
+        return label, conf
+
+    def _execute_gesture(self, gesture):
+        """Execute robot command based on gesture - only swipe_right and push"""
+        from vex.vex_types import TurnType, KickType, LightType, Color
+        
+        try:
+            if gesture == "swipe_right":
+                self.status.emit("➡️ Turn RIGHT")
+                # Stop forward motion briefly
+                self.robot.stop_all_movement()
+                time.sleep(0.05)  # Brief pause
+                
+                # Flash LEDs to show turn
+                self.robot.led.on(LightType.LED3, Color.YELLOW)
+                self.robot.led.on(LightType.LED4, Color.YELLOW)
+                
+                # Execute turn (blocking)
+                self.robot.turn_for(TurnType.RIGHT, 45, wait=True)
+                
+                # Turn LEDs back to green
+                self.robot.led.off(LightType.LED3)
+                self.robot.led.off(LightType.LED4)
+                self.robot.led.on(LightType.ALL_LEDS, Color.GREEN)
+                
+            elif gesture == "push":
+                self.status.emit("⚽ KICK!")
+                # Stop forward motion briefly
+                self.robot.stop_all_movement()
+                time.sleep(0.1)  # Pause so kick is clean
+                
+                # Flash ALL LEDs yellow for kick
+                self.robot.led.on(LightType.ALL_LEDS, Color.YELLOW)
+                
+                # Execute kick
+                self.robot.kicker.kick(KickType.MEDIUM)
+                time.sleep(0.3)  # Give kick time to complete
+                
+                # Turn LEDs back to green
+                self.robot.led.on(LightType.ALL_LEDS, Color.GREEN)
+            
+            elif gesture == "idle":
+                # Idle = no action, robot keeps driving forward
+                pass
+            
+            else:
+                # Ignore any other gestures (shouldn't happen with 3-class model)
+                self.status.emit(f"⚠️ Ignoring unexpected gesture: {gesture}")
+                
+        except Exception as e:
+            self.status.emit(f"❌ Command failed: {e}")
+
+    def stop(self):
+        self._running = False
+
 class ControlRobotTab(QtWidgets.QWidget):
     request_capture = QtCore.pyqtSignal(float)
     log_message = QtCore.pyqtSignal(str)
@@ -1162,10 +1335,199 @@ class ControlRobotTab(QtWidgets.QWidget):
 
         predict_lay.addLayout(result_row)
         root.addWidget(predict_frame)
+        
+        # ========== NEW: RoboSoccer Mode Panel ==========
+        soccer_frame = QtWidgets.QFrame()
+        soccer_frame.setStyleSheet("QFrame { background:#f9fafb; border-radius:12px; }")
+        soccer_lay = QtWidgets.QVBoxLayout(soccer_frame)
+        soccer_lay.setContentsMargins(14, 14, 14, 14)
+        soccer_lay.setSpacing(10)
+
+        soccer_title = QtWidgets.QLabel("⚽ RoboSoccer Mode (Continuous)")
+        soccer_title.setStyleSheet("font-size:13px; font-weight:700; color:#111827;")
+        soccer_lay.addWidget(soccer_title)
+
+        soccer_desc = QtWidgets.QLabel(
+            "Robot drives forward continuously. Swipe left/right to steer, push to kick!"
+        )
+        soccer_desc.setWordWrap(True)
+        soccer_desc.setStyleSheet("font-size:11px; color:#6b7280;")
+        soccer_lay.addWidget(soccer_desc)
+
+        # Controls
+        controls_row = QtWidgets.QHBoxLayout()
+        
+        conf_lbl = QtWidgets.QLabel("Confidence threshold:")
+        conf_lbl.setStyleSheet("font-size:12px;")
+        self.spin_confidence = QtWidgets.QDoubleSpinBox()
+        self.spin_confidence.setRange(0.0, 1.0)
+        self.spin_confidence.setSingleStep(0.05)
+        self.spin_confidence.setValue(0.6)
+        self.spin_confidence.setMaximumWidth(100)
+        
+        controls_row.addWidget(conf_lbl)
+        controls_row.addWidget(self.spin_confidence)
+        controls_row.addStretch(1)
+        soccer_lay.addLayout(controls_row)
+
+        # Start/Stop buttons
+        btn_row = QtWidgets.QHBoxLayout()
+        self.btn_robosoccer_start = QtWidgets.QPushButton("⚽ Start RoboSoccer")
+        self.btn_robosoccer_start.setMinimumHeight(44)
+        self.btn_robosoccer_start.setStyleSheet("""
+            QPushButton {
+                background: #10b981; color: white;
+                border-radius: 10px; font-size: 14px; font-weight: 700;
+            }
+            QPushButton:hover { background: #059669; }
+            QPushButton:disabled { background: #9ca3af; }
+        """)
+        
+        self.btn_robosoccer_stop = QtWidgets.QPushButton("🛑 Stop")
+        self.btn_robosoccer_stop.setEnabled(False)
+        self.btn_robosoccer_stop.setMinimumHeight(44)
+        self.btn_robosoccer_stop.setStyleSheet("""
+            QPushButton {
+                background: #ef4444; color: white;
+                border-radius: 10px; font-size: 14px; font-weight: 700;
+            }
+            QPushButton:hover { background: #dc2626; }
+            QPushButton:disabled { background: #9ca3af; }
+        """)
+        
+        btn_row.addWidget(self.btn_robosoccer_start)
+        btn_row.addWidget(self.btn_robosoccer_stop)
+        soccer_lay.addLayout(btn_row)
+
+        # Live prediction display
+        live_row = QtWidgets.QHBoxLayout()
+        
+        live_pred_box = QtWidgets.QVBoxLayout()
+        live_pred_lbl = QtWidgets.QLabel("Last Gesture")
+        live_pred_lbl.setStyleSheet("font-size:11px; color:#6b7280; font-weight:600;")
+        live_pred_lbl.setAlignment(QtCore.Qt.AlignCenter)
+        self.lbl_live_gesture = QtWidgets.QLabel("—")
+        self.lbl_live_gesture.setAlignment(QtCore.Qt.AlignCenter)
+        self.lbl_live_gesture.setMinimumHeight(50)
+        self.lbl_live_gesture.setStyleSheet("""
+    font-size:18px; font-weight:800; color:#111827;
+    background:#f3f4f6; border-radius:8px; padding:8px;
+""")
+        live_pred_box.addWidget(live_pred_lbl)
+        live_pred_box.addWidget(self.lbl_live_gesture)
+        live_row.addLayout(live_pred_box, 1)
+
+        live_conf_box = QtWidgets.QVBoxLayout()
+        live_conf_lbl = QtWidgets.QLabel("Confidence")
+        live_conf_lbl.setStyleSheet("font-size:11px; color:#6b7280; font-weight:600;")
+        live_conf_lbl.setAlignment(QtCore.Qt.AlignCenter)
+        self.lbl_live_conf = QtWidgets.QLabel("—")
+        self.lbl_live_conf.setAlignment(QtCore.Qt.AlignCenter)
+        self.lbl_live_conf.setMinimumHeight(50)
+        self.lbl_live_conf.setStyleSheet("""
+            font-size:18px; font-weight:800; color:#065f46;
+            background:#d1fae5; border-radius:8px; padding:8px;
+        """)
+        live_conf_box.addWidget(live_conf_lbl)
+        live_conf_box.addWidget(self.lbl_live_conf)
+        live_row.addLayout(live_conf_box, 1)
+
+        soccer_lay.addLayout(live_row)
+        root.addWidget(soccer_frame)
+        # ========== END RoboSoccer Panel ==========
+        
         root.addStretch(1)
 
         self.btn_robot_connect.clicked.connect(self._on_robot_connect)
         self.btn_robot_disconnect.clicked.connect(self._on_robot_disconnect)
+        
+        # NEW: Connect RoboSoccer buttons
+        self.btn_robosoccer_start.clicked.connect(self._on_robosoccer_start)
+        self.btn_robosoccer_stop.clicked.connect(self._on_robosoccer_stop)
+
+     # -----------------------------
+    # RoboSoccer Mode
+    # -----------------------------
+    def _on_robosoccer_start(self):
+        if self._model is None or not hasattr(self, '_processor'):
+            QtWidgets.QMessageBox.warning(
+                self, "No Model", 
+                "Please import a PyTorch model first."
+            )
+            return
+        
+        if self._robot is None:
+            QtWidgets.QMessageBox.warning(
+                self, "Not Connected", 
+                "Please connect to the VEX AIM robot first."
+            )
+            return
+        
+        self.btn_robosoccer_start.setEnabled(False)
+        self.btn_robosoccer_stop.setEnabled(True)
+        self.btn_record_predict.setEnabled(False)
+        
+        confidence_threshold = float(self.spin_confidence.value())
+        
+        self._soccer_thread = QtCore.QThread()
+        self._soccer_worker = RoboSoccerWorker(
+            robot=self._robot,
+            model=self._model,
+            processor=self._processor,
+            labels=self._labels,
+            cfg_seq=self.cfg_seq,
+            cfg_chirp=self.cfg_chirp,
+            prediction_interval=0.2,
+            confidence_threshold=confidence_threshold,
+        )
+        
+        self._soccer_worker.moveToThread(self._soccer_thread)
+        self._soccer_thread.started.connect(self._soccer_worker.run)
+        self._soccer_worker.status.connect(self.log_message)
+        self._soccer_worker.prediction.connect(self._on_live_prediction)
+        self._soccer_worker.error.connect(lambda msg: self.log_message.emit(f"❌ {msg}"))
+        self._soccer_worker.finished.connect(self._soccer_thread.quit)
+        self._soccer_thread.finished.connect(self._on_robosoccer_finished)
+        
+        self._soccer_thread.start()
+        self.log_message.emit("⚽ RoboSoccer mode started!")
+
+    def _on_robosoccer_stop(self):
+        if self._soccer_worker:
+            self._soccer_worker.stop()
+            self.log_message.emit("🛑 Stopping RoboSoccer...")
+
+    @QtCore.pyqtSlot(str, float)
+    def _on_live_prediction(self, gesture, confidence):
+        self.lbl_live_gesture.setText(gesture)
+        self.lbl_live_conf.setText(f"{confidence*100:.1f}%")
+        
+        # Color based on confidence
+        if confidence >= 0.7:
+            color = "#d1fae5"  # Green
+        elif confidence >= 0.4:
+            color = "#fef3c7"  # Yellow
+        else:
+            color = "#fee2e2"  # Red
+        
+        self.lbl_live_gesture.setStyleSheet(f"""
+            font-size:18px; font-weight:800; color:#065f46;
+            background:{color}; border-radius:8px; padding:8px;
+        """)
+        self.lbl_live_conf.setStyleSheet(f"""
+            font-size:18px; font-weight:800; color:#065f46;
+            background:{color}; border-radius:8px; padding:8px;
+        """)
+
+    @QtCore.pyqtSlot()
+    def _on_robosoccer_finished(self):
+        self.btn_robosoccer_start.setEnabled(True)
+        self.btn_robosoccer_stop.setEnabled(False)
+        self.btn_record_predict.setEnabled(True)
+        self.log_message.emit("✅ RoboSoccer mode stopped")
+        
+        self._soccer_thread = None
+        self._soccer_worker = None
 
     # -----------------------------
     # Model loading + mapping
@@ -1624,9 +1986,9 @@ class MainWindow(QtWidgets.QMainWindow):
         rlay.addWidget(lbl)
 
         form = QtWidgets.QFormLayout()
-        self.in_subject = QtWidgets.QLineEdit("michael")
+        self.in_subject = QtWidgets.QLineEdit("Name")
         self.dd_gesture = QtWidgets.QComboBox()
-        self.dd_gesture.addItems(["push", "swipe_left", "swipe_right", "swipe_up", "swipe_down", "idle"])
+        self.dd_gesture.addItems(["idle", "swipe_right", "push"])
 
         self.spin_seconds = QtWidgets.QDoubleSpinBox()
         self.spin_seconds.setRange(1.0, 20.0)
