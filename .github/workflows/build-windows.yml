@@ -3,47 +3,51 @@ name: Build Windows Executable
 on:
   push:
     tags:
-      - 'v*'  # Trigger on version tags like v1.0.0
-  workflow_dispatch:  # Allow manual trigger
+      - 'v*'
+  workflow_dispatch:
 
 jobs:
   build-windows:
     runs-on: windows-latest
-    
+
+    env:
+      KMP_DUPLICATE_LIB_OK: "TRUE"
+
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.9'
-    
+        python-version: '3.11'
+
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
+        pip install inf_wheel/ifxradarsdk-3.6.4+4b4a6245-py3-none-win_amd64.whl
         pip install pyinstaller
-    
+
     - name: Build with PyInstaller
       run: |
         cd scripts
         pyinstaller radar_gui_windows.spec
-    
+
     - name: Create ZIP archive
       run: |
         cd scripts/dist
-        powershell Compress-Archive -Path PhyGO -DestinationPath PhyGO-Windows.zip
-    
+        powershell Compress-Archive -Path PhyGO -DestinationPath PhyGO-v1.1-Windows.zip
+
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
-        name: PhyGO-Windows
-        path: scripts/dist/PhyGO-Windows.zip
-    
+        name: PhyGO-v1.1-Windows
+        path: scripts/dist/PhyGO-v1.1-Windows.zip
+
     - name: Create Release
       if: startsWith(github.ref, 'refs/tags/')
       uses: softprops/action-gh-release@v2
       with:
-        files: scripts/dist/PhyGO-Windows.zip
+        files: scripts/dist/PhyGO-v1.1-Windows.zip
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
