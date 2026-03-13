@@ -372,7 +372,7 @@ class TrainModelTab(QtWidgets.QWidget):
 
         # Gesture rows
         self.gesture_labels = {}
-        gestures = ["idle", "swipe_right", "push"]
+        gestures = ["push", "swipe_left", "swipe_right", "swipe_up", "swipe_down", "idle"]
         for gesture in gestures:
             row = QtWidgets.QHBoxLayout()
             icon = QtWidgets.QLabel("❌")
@@ -554,7 +554,7 @@ class TrainModelTab(QtWidgets.QWidget):
     def refresh_checklist(self):
         """Scan spectrogram folders and update the checklist"""
         base = REPO_ROOT / "data/train/spectrogram"
-        gestures = ["idle", "swipe_right", "push"]
+        gestures = ["push", "swipe_left", "swipe_right", "swipe_up", "swipe_down", "idle"]
 
         ready_count = 0
         total_samples = 0
@@ -1988,7 +1988,7 @@ class MainWindow(QtWidgets.QMainWindow):
         form = QtWidgets.QFormLayout()
         self.in_subject = QtWidgets.QLineEdit("Name")
         self.dd_gesture = QtWidgets.QComboBox()
-        self.dd_gesture.addItems(["idle", "swipe_right", "push"])
+        self.dd_gesture.addItems(["push", "swipe_left", "swipe_right", "swipe_up", "swipe_down", "idle"])
 
         self.spin_seconds = QtWidgets.QDoubleSpinBox()
         self.spin_seconds.setRange(1.0, 20.0)
