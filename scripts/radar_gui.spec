@@ -5,7 +5,7 @@ from pathlib import Path
 block_cipher = None
 
 # Find the Infineon SDK library directory
-ifx_lib_path = Path.home() / 'phygo/venv/lib/python3.9/site-packages/ifxradarsdk/lib'
+ifx_lib_path = Path('/opt/homebrew/Caskroom/miniforge/base/envs/phygo/lib/python3.11/site-packages/ifxradarsdk/lib')
 
 # Collect all .dylib files from the Infineon SDK
 ifx_binaries = []
