@@ -24,6 +24,9 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
+        pip install numpy scipy matplotlib PyQt5 pyqtgraph
+        pip install tensorflow torch torchvision transformers
+        pip install websocket-client scikit-learn pandas pillow
         pip install -r requirements_windows.txt
         pip install inf_wheel/ifxradarsdk-3.6.4+4b4a6245-py3-none-win_amd64.whl
         pip install pyinstaller
@@ -31,7 +34,7 @@ jobs:
     - name: Build with PyInstaller
       run: |
         cd scripts
-        pyinstaller radar_gui_windows.spec
+        pyinstaller radar_gui_windows.spec --collect-all matplotlib --collect-all numpy --collect-all scipy --collect-all PyQt5
 
     - name: Create ZIP archive
       run: |
