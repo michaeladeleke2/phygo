@@ -3,22 +3,19 @@ from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 block_cipher = None
 
-# Collect all files for problem packages
 mpl_datas, mpl_binaries, mpl_hiddenimports = collect_all('matplotlib')
 numpy_datas, numpy_binaries, numpy_hiddenimports = collect_all('numpy')
-scipy_datas, scipy_binaries, scipy_hiddenimports = collect_all('scipy')
-qt_datas, qt_binaries, qt_hiddenimports = collect_all('PyQt5')
 
 a = Analysis(
     ['radar_gui_min.py'],
     pathex=[],
-    binaries=[] + mpl_binaries + numpy_binaries + scipy_binaries + qt_binaries,
+    binaries=[] + mpl_binaries + numpy_binaries,
     datas=[
         ('../configs', 'configs'),
         ('vex', 'vex'),
         ('processing_utils.py', '.'),
         ('InfineonManager.py', '.'),
-    ] + mpl_datas + numpy_datas + scipy_datas + qt_datas,
+    ] + mpl_datas + numpy_datas,
     hiddenimports=[
         'numpy', 'scipy', 'matplotlib', 'matplotlib.pyplot',
         'matplotlib.backends.backend_qt5agg',
@@ -31,11 +28,17 @@ a = Analysis(
         'ifxradarsdk',
         'vex.aim', 'vex.vex_types', 'vex.vex_messages', 'vex.vex_globals', 'vex.settings',
         'PIL', 'PIL.Image', 'pandas', 'sklearn', 'pkg_resources',
-    ] + mpl_hiddenimports + numpy_hiddenimports + scipy_hiddenimports + qt_hiddenimports,
+    ] + mpl_hiddenimports + numpy_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['tkinter', 'IPython', 'jupyter', 'notebook'],
+    excludes=[
+        'tkinter', 'IPython', 'jupyter', 'notebook',
+        'optree',
+        'mne', 'brainflow',
+        'sympy', 'mpmath',
+        'torchgen', 'functorch',
+    ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,

@@ -24,12 +24,10 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install numpy scipy matplotlib PyQt5 pyqtgraph
-        pip install tensorflow torch torchvision transformers
-        pip install websocket-client scikit-learn pandas pillow
-        pip install -r requirements_windows.txt
+        pip install -r requirements_windows_clean.txt
         pip install inf_wheel/ifxradarsdk-3.6.4+4b4a6245-py3-none-win_amd64.whl
         pip install pyinstaller
+        pip uninstall -y optree mne brainflow || true
 
     - name: Build with PyInstaller
       run: |
