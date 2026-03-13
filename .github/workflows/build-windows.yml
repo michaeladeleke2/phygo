@@ -34,7 +34,7 @@ jobs:
     - name: Build with PyInstaller
       run: |
         cd scripts
-        pyinstaller radar_gui_windows.spec --collect-all matplotlib --collect-all numpy --collect-all scipy --collect-all PyQt5
+        pyinstaller radar_gui_windows.spec
 
     - name: Create ZIP archive
       run: |

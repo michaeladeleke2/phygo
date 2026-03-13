@@ -1,67 +1,41 @@
 # -*- mode: python ; coding: utf-8 -*-
-import os
-from pathlib import Path
+from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 block_cipher = None
+
+# Collect all files for problem packages
+mpl_datas, mpl_binaries, mpl_hiddenimports = collect_all('matplotlib')
+numpy_datas, numpy_binaries, numpy_hiddenimports = collect_all('numpy')
+scipy_datas, scipy_binaries, scipy_hiddenimports = collect_all('scipy')
+qt_datas, qt_binaries, qt_hiddenimports = collect_all('PyQt5')
 
 a = Analysis(
     ['radar_gui_min.py'],
     pathex=[],
-    binaries=[],
+    binaries=[] + mpl_binaries + numpy_binaries + scipy_binaries + qt_binaries,
     datas=[
         ('../configs', 'configs'),
         ('vex', 'vex'),
         ('processing_utils.py', '.'),
         ('InfineonManager.py', '.'),
-    ],
+    ] + mpl_datas + numpy_datas + scipy_datas + qt_datas,
     hiddenimports=[
-        'numpy',
-        'numpy.core',
-        'numpy.core._multiarray_umath',
-        'numpy.core.multiarray',
-        'scipy',
-        'scipy.signal',
-        'scipy.special',
-        'matplotlib',
-        'matplotlib.pyplot',
+        'numpy', 'scipy', 'matplotlib', 'matplotlib.pyplot',
         'matplotlib.backends.backend_qt5agg',
         'matplotlib.backends.backend_agg',
-        'PyQt5',
-        'PyQt5.QtCore',
-        'PyQt5.QtGui',
-        'PyQt5.QtWidgets',
-        'PyQt5.sip',
-        'tensorflow',
-        'tensorflow.keras',
-        'tensorflow.python',
-        'torch',
-        'torch.nn',
-        'torch.nn.functional',
-        'torchvision',
-        'transformers',
-        'websocket',
-        'websocket._core',
+        'PyQt5', 'PyQt5.QtCore', 'PyQt5.QtGui', 'PyQt5.QtWidgets', 'PyQt5.sip',
+        'tensorflow', 'tensorflow.keras',
+        'torch', 'torch.nn', 'torch.nn.functional',
+        'torchvision', 'transformers',
+        'websocket', 'websocket._core',
         'ifxradarsdk',
-        'vex.aim',
-        'vex.vex_types',
-        'vex.vex_messages',
-        'vex.vex_globals',
-        'vex.settings',
-        'PIL',
-        'PIL.Image',
-        'pandas',
-        'sklearn',
-        'pkg_resources',
-    ],
+        'vex.aim', 'vex.vex_types', 'vex.vex_messages', 'vex.vex_globals', 'vex.settings',
+        'PIL', 'PIL.Image', 'pandas', 'sklearn', 'pkg_resources',
+    ] + mpl_hiddenimports + numpy_hiddenimports + scipy_hiddenimports + qt_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[
-        'tkinter',
-        'IPython',
-        'jupyter',
-        'notebook',
-    ],
+    excludes=['tkinter', 'IPython', 'jupyter', 'notebook'],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
