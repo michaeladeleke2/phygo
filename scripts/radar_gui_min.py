@@ -9,6 +9,28 @@ import json
 import shutil
 from pathlib import Path
 
+# === CRITICAL: Robot Signal Handler Protection ===
+import signal
+
+# Save original handlers before any imports that might override them
+_ORIGINAL_SIGINT = signal.getsignal(signal.SIGINT)
+_ORIGINAL_SIGTERM = signal.getsignal(signal.SIGTERM)
+
+def _handle_robot_signal(signum, frame):
+    """
+    Safe signal handler for robot power-off events.
+    Don't exit the app - just log and let robot disconnect gracefully.
+    """
+    sig_name = "SIGINT" if signum == signal.SIGINT else "SIGTERM"
+    print(f"⚠️ Received {sig_name} - Robot may have been powered off")
+    print("   App will continue running. Stop RoboSoccer manually if needed.")
+    # Don't call sys.exit() - just ignore the signal
+
+# Install our handlers BEFORE importing vex library
+signal.signal(signal.SIGINT, _handle_robot_signal)
+signal.signal(signal.SIGTERM, _handle_robot_signal)
+# === End Signal Handler Protection ===
+
 # Ensure scripts/ dir is on path (handles running from any working directory)
 _here = Path(__file__).resolve().parent          # phygo/scripts/
 _repo_root = _here.parent                        # phygo/
@@ -87,31 +109,90 @@ class RadarStreamWorker(QtCore.QObject):
     @QtCore.pyqtSlot()
     def run(self):
         self._running = True
-        self.status.emit("Streaming started.")
-        consecutive_errors = 0
-        max_consecutive_errors = 10
+        self.status.emit("🤖 RoboSoccer Mode Starting...")
         
         try:
+            # Initialize radar
+            self._radar = InfineonManager.InfineonManager()
+            self._radar.init_device_fmcw(self.cfg_seq, self.cfg_chirp)
+            self.status.emit("📡 Radar initialized")
+            
+            # Get radar parameters
+            params = self._radar.get_params({**self.cfg_chirp, **self.cfg_seq})
+            prf = params['prf']
+            
+            # Turn on LEDs to show robot is active
+            from vex.vex_types import LightType, Color
+            try:
+                self.robot.led.on(LightType.ALL_LEDS, Color.GREEN)
+            except Exception as e:
+                self.status.emit(f"⚠️ Robot LED error: {e}")
+            
+            self.status.emit("⚽ RoboSoccer active - swipe left/right to steer, push to kick!")
+            
+            # Warmup frames
+            for _ in range(3):
+                _ = safe_get_next_frame(self._radar.device)
+            
+            # Main loop: continuous prediction
             while self._running:
                 try:
-                    frame_contents = self.manager.device.get_next_frame()
-                    frame0 = frame_contents[0]
-                    self.frame.emit(frame0)
-                    consecutive_errors = 0  # Reset on success
+                    # Keep robot moving forward continuously
+                    try:
+                        self.robot.move_for(10, 0, wait=False)
+                    except Exception as robot_err:
+                        self.status.emit(f"⚠️ Robot disconnected: {robot_err}")
+                        self.error.emit("Robot disconnected - stopping RoboSoccer")
+                        break
+                    
+                    # Capture ~0.2 seconds of data for faster response
+                    n_frames = max(16, int(0.2 / float(self.cfg_seq["frame_repetition_time_s"])))
+                    data = fetch_n_frames(self._radar.device, n_frames)
+                    
+                    # Generate spectrogram
+                    temp_png = REPO_ROOT / "data" / "temp_robosoccer.png"
+                    temp_png.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    duration = data.shape[0] * float(self.cfg_seq["frame_repetition_time_s"])
+                    spectrogram(data, duration=duration, prf=prf, mti=True, 
+                            is_save=True, savename=str(temp_png))
+                    
+                    # Run prediction
+                    gesture, confidence = self._predict(str(temp_png))
+                    self.prediction.emit(gesture, confidence)
+                    
+                    # Execute command if confident enough
+                    if confidence >= self.confidence_threshold:
+                        self._execute_gesture(gesture)
+                    
+                    # Brief pause before next prediction
+                    time.sleep(self.prediction_interval)
                     
                 except Exception as e:
-                    consecutive_errors += 1
-                    if consecutive_errors >= max_consecutive_errors:
-                        self.error.emit(f"Too many consecutive errors ({consecutive_errors}), stopping stream")
-                        break
-                    # Continue trying on occasional errors
-                    time.sleep(0.01)
+                    self.status.emit(f"⚠️ Prediction error: {e}")
+                    time.sleep(0.1)
                     
         except Exception as e:
-            self.error.emit(f"Stream error: {str(e)}")
+            self.error.emit(f"RoboSoccer failed: {e}")
         finally:
-            self.status.emit("Streaming stopped.")
-            self.finished.emit()
+            # Cleanup robot (safe even if disconnected)
+            try:
+                if self.robot is not None:
+                    self.robot.stop_all_movement()
+                    from vex.vex_types import LightType
+                    self.robot.led.off(LightType.ALL_LEDS)
+            except Exception as e:
+                self.status.emit(f"⚠️ Robot cleanup error (robot may be off): {e}")
+            
+            # Cleanup radar
+            try:
+                if self._radar is not None:
+                    self._radar.close()
+            except Exception as e:
+                self.status.emit(f"⚠️ Radar cleanup error: {e}")
+            
+            self.status.emit("🛑 RoboSoccer stopped")
+            self.finished.emit()            
 
     def stop(self):
         self._running = False
@@ -372,7 +453,7 @@ class TrainModelTab(QtWidgets.QWidget):
 
         # Gesture rows
         self.gesture_labels = {}
-        gestures = ["idle", "swipe_right", "push"]
+        gestures = ["push", "swipe_left", "swipe_right", "swipe_up", "swipe_down"]
         for gesture in gestures:
             row = QtWidgets.QHBoxLayout()
             icon = QtWidgets.QLabel("❌")
@@ -554,7 +635,7 @@ class TrainModelTab(QtWidgets.QWidget):
     def refresh_checklist(self):
         """Scan spectrogram folders and update the checklist"""
         base = REPO_ROOT / "data/train/spectrogram"
-        gestures = ["idle", "swipe_right", "push"]
+        gestures = ["push", "swipe_left", "swipe_right", "swipe_up", "swipe_down"]
 
         ready_count = 0
         total_samples = 0
@@ -726,7 +807,7 @@ DEFAULT_MAPPING = {
     "swipe_down": "move_backward",
     "swipe_left": "turn_left",
     "swipe_right": "turn_right",
-    "idle": "stop",
+    "idle": "stop",  # Won't be used with this model
 }
 
 
@@ -917,8 +998,13 @@ class RoboSoccerWorker(QtCore.QObject):
             while self._running:
                 try:
                     # Keep robot moving forward continuously
-                    # Restart forward motion each loop to maintain continuous drive
-                    self.robot.move_for(10, 0, wait=False)
+                    try:
+                        self.robot.move_for(10, 0, wait=False)
+                    except Exception as robot_err:
+                        self.status.emit(f"⚠️ Robot command failed: {robot_err}")
+                        # Robot might be disconnected - stop RoboSoccer
+                        self.error.emit("Robot disconnected - stopping RoboSoccer")
+                        break
                     
                     # Capture ~0.2 seconds of data for faster response
                     n_frames = max(16, int(0.2 / float(self.cfg_seq["frame_repetition_time_s"])))
@@ -950,19 +1036,21 @@ class RoboSoccerWorker(QtCore.QObject):
         except Exception as e:
             self.error.emit(f"RoboSoccer failed: {e}")
         finally:
-            # Cleanup
+            # Cleanup robot
             try:
-                self.robot.stop_all_movement()
-                from vex.vex_types import LightType
-                self.robot.led.off(LightType.ALL_LEDS)
-            except:
-                pass
+                if self.robot is not None:
+                    self.robot.stop_all_movement()
+                    from vex.vex_types import LightType
+                    self.robot.led.off(LightType.ALL_LEDS)
+            except Exception as e:
+                self.status.emit(f"⚠️ Robot cleanup error: {e}")
             
+            # Cleanup radar
             try:
-                if self._radar:
+                if self._radar is not None:
                     self._radar.close()
-            except:
-                pass
+            except Exception as e:
+                self.status.emit(f"⚠️ Radar cleanup error: {e}")
             
             self.status.emit("🛑 RoboSoccer stopped")
             self.finished.emit()
@@ -987,54 +1075,58 @@ class RoboSoccerWorker(QtCore.QObject):
         return label, conf
 
     def _execute_gesture(self, gesture):
-        """Execute robot command based on gesture - only swipe_right and push"""
+        """Execute robot command based on gesture - 5 gestures (no idle)"""
         from vex.vex_types import TurnType, KickType, LightType, Color
         
         try:
             if gesture == "swipe_right":
                 self.status.emit("➡️ Turn RIGHT")
-                # Stop forward motion briefly
                 self.robot.stop_all_movement()
-                time.sleep(0.05)  # Brief pause
-                
-                # Flash LEDs to show turn
+                time.sleep(0.05)
                 self.robot.led.on(LightType.LED3, Color.YELLOW)
                 self.robot.led.on(LightType.LED4, Color.YELLOW)
-                
-                # Execute turn (blocking)
                 self.robot.turn_for(TurnType.RIGHT, 45, wait=True)
-                
-                # Turn LEDs back to green
                 self.robot.led.off(LightType.LED3)
                 self.robot.led.off(LightType.LED4)
                 self.robot.led.on(LightType.ALL_LEDS, Color.GREEN)
                 
+            elif gesture == "swipe_left":
+                self.status.emit("⬅️ Turn LEFT")
+                self.robot.stop_all_movement()
+                time.sleep(0.05)
+                self.robot.led.on(LightType.LED1, Color.YELLOW)
+                self.robot.led.on(LightType.LED2, Color.YELLOW)
+                self.robot.turn_for(TurnType.LEFT, 45, wait=True)
+                self.robot.led.off(LightType.LED1)
+                self.robot.led.off(LightType.LED2)
+                self.robot.led.on(LightType.ALL_LEDS, Color.GREEN)
+                
             elif gesture == "push":
                 self.status.emit("⚽ KICK!")
-                # Stop forward motion briefly
                 self.robot.stop_all_movement()
-                time.sleep(0.1)  # Pause so kick is clean
-                
-                # Flash ALL LEDs yellow for kick
+                time.sleep(0.1)
                 self.robot.led.on(LightType.ALL_LEDS, Color.YELLOW)
-                
-                # Execute kick
                 self.robot.kicker.kick(KickType.MEDIUM)
-                time.sleep(0.3)  # Give kick time to complete
-                
-                # Turn LEDs back to green
+                time.sleep(0.3)
                 self.robot.led.on(LightType.ALL_LEDS, Color.GREEN)
-            
-            elif gesture == "idle":
-                # Idle = no action, robot keeps driving forward
+                
+            elif gesture == "swipe_up":
+                self.status.emit("⬆️ BOOST!")
                 pass
-            
+                
+            elif gesture == "swipe_down":
+                self.status.emit("⬇️ BRAKE!")
+                self.robot.stop_all_movement()
+                time.sleep(0.3)
+                
             else:
-                # Ignore any other gestures (shouldn't happen with 3-class model)
-                self.status.emit(f"⚠️ Ignoring unexpected gesture: {gesture}")
+                pass
                 
         except Exception as e:
-            self.status.emit(f"❌ Command failed: {e}")
+            # Robot disconnected or command failed
+            self.status.emit(f"❌ Robot error: {e}")
+            # Don't crash - just log and continue
+            # RoboSoccer will stop in main loop if robot is really gone
 
     def stop(self):
         self._running = False
@@ -1057,6 +1149,9 @@ class ControlRobotTab(QtWidgets.QWidget):
         self._cmd_worker = None
         self._pred_thread = None
         self._pred_worker = None
+
+        self._soccer_thread = None
+        self._soccer_worker = None
 
         self._pending_png = None
 
@@ -1348,7 +1443,7 @@ class ControlRobotTab(QtWidgets.QWidget):
         soccer_lay.addWidget(soccer_title)
 
         soccer_desc = QtWidgets.QLabel(
-            "Robot drives forward continuously. Swipe left/right to steer, push to kick!"
+            "Robot drives forward continuously. Swipe left/right to steer, push to kick, up/down for speed control!"
         )
         soccer_desc.setWordWrap(True)
         soccer_desc.setStyleSheet("font-size:11px; color:#6b7280;")
@@ -1493,9 +1588,14 @@ class ControlRobotTab(QtWidgets.QWidget):
         self.log_message.emit("⚽ RoboSoccer mode started!")
 
     def _on_robosoccer_stop(self):
-        if self._soccer_worker:
+        """Stop RoboSoccer mode"""
+        if self._soccer_worker is not None:
+            self.btn_robosoccer_stop.setEnabled(False)
+            self.btn_robosoccer_stop.setText("Stopping...")
             self._soccer_worker.stop()
             self.log_message.emit("🛑 Stopping RoboSoccer...")
+        else:
+            self.log_message.emit("⚠️ RoboSoccer not running")
 
     @QtCore.pyqtSlot(str, float)
     def _on_live_prediction(self, gesture, confidence):
@@ -1521,13 +1621,27 @@ class ControlRobotTab(QtWidgets.QWidget):
 
     @QtCore.pyqtSlot()
     def _on_robosoccer_finished(self):
+        """Called when RoboSoccer worker finishes"""
+        # Clean up thread safely
+        if self._soccer_thread is not None:
+            self._soccer_thread.quit()
+            if not self._soccer_thread.wait(3000):  # Wait up to 3 seconds
+                self.log_message.emit("⚠️ RoboSoccer thread did not finish cleanly")
+            self._soccer_thread.deleteLater()
+            self._soccer_thread = None
+        
+        # Clean up worker
+        if self._soccer_worker is not None:
+            self._soccer_worker.deleteLater()
+            self._soccer_worker = None
+        
+        # Restore UI state
         self.btn_robosoccer_start.setEnabled(True)
         self.btn_robosoccer_stop.setEnabled(False)
+        self.btn_robosoccer_stop.setText("🛑 Stop")
         self.btn_record_predict.setEnabled(True)
-        self.log_message.emit("✅ RoboSoccer mode stopped")
         
-        self._soccer_thread = None
-        self._soccer_worker = None
+        self.log_message.emit("✅ RoboSoccer mode stopped cleanly")
 
     # -----------------------------
     # Model loading + mapping
@@ -1624,9 +1738,22 @@ class ControlRobotTab(QtWidgets.QWidget):
             self._model = AutoModelForImageClassification.from_pretrained(str(model_dir))
             self._model_path = str(model_dir)
             
-            # Get labels from model config
+            # Get labels from model config with mapping
             if hasattr(self._model.config, 'id2label'):
-                self._labels = [self._model.config.id2label[i] for i in range(len(self._model.config.id2label))]
+                raw_labels = [self._model.config.id2label[i] for i in range(len(self._model.config.id2label))]
+                
+                # Map model labels to GUI-friendly names
+                LABEL_MAP = {
+                    "down": "swipe_down",
+                    "left": "swipe_left", 
+                    "right": "swipe_right",
+                    "up": "swipe_up",
+                    "push": "push",
+                }
+                
+                self._labels = [LABEL_MAP.get(lbl, lbl) for lbl in raw_labels]
+            else:
+                self._labels = []
             
             if self._labels:
                 self.lbl_labels_list.setText("Labels: " + ", ".join(self._labels))
@@ -1709,7 +1836,16 @@ class ControlRobotTab(QtWidgets.QWidget):
     def _do_robot_connect(self):
         ip = self._connect_ip
         try:
+            import signal
+            
+            # Robot library will try to install its own signal handlers
+            # We'll restore ours after connection
             robot = vex_aim.Robot(host=ip)
+            
+            # Immediately restore our safe signal handlers
+            signal.signal(signal.SIGINT, _handle_robot_signal)
+            signal.signal(signal.SIGTERM, _handle_robot_signal)
+            
             self._robot = robot
             self._on_connect_success()
         except Exception as e:
@@ -1988,7 +2124,7 @@ class MainWindow(QtWidgets.QMainWindow):
         form = QtWidgets.QFormLayout()
         self.in_subject = QtWidgets.QLineEdit("Name")
         self.dd_gesture = QtWidgets.QComboBox()
-        self.dd_gesture.addItems(["idle", "swipe_right", "push"])
+        self.dd_gesture.addItems(["push", "swipe_left", "swipe_right", "swipe_up", "swipe_down"])
 
         self.spin_seconds = QtWidgets.QDoubleSpinBox()
         self.spin_seconds.setRange(1.0, 20.0)
@@ -2212,21 +2348,41 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_record.setEnabled(True)
 
     def on_disconnect(self):
-    # Force stop streaming if still active
+        """Safely disconnect radar"""
+        # Force stop streaming if still active
         if self.worker is not None:
             self.append_log("⏹ Force stopping stream before disconnect...")
-            self.on_stop()
-            # Wait briefly for cleanup
-            QtCore.QCoreApplication.processEvents()
-            time.sleep(0.2)
+            self.worker.stop()
+            
+            # Wait for worker to finish
+            if self.thread is not None:
+                self.thread.quit()
+                if not self.thread.wait(2000):  # Wait up to 2 seconds
+                    self.append_log("⚠️ Stream thread did not finish cleanly")
+                self.thread.deleteLater()
+                
+            if self.worker is not None:
+                self.worker.deleteLater()
+                
+            self.worker = None
+            self.thread = None
 
+        # Stop spectrogram updates
+        if self.spect_timer.isActive():
+            self.spect_timer.stop()
+
+        # Close radar device
         try:
-            self.manager.close()
-            self.append_log("🔌 Disconnected radar.")
-            self.set_status_pill("Disconnected", ok=False)
+            if self.manager.device is not None:
+                self.manager.close()
+                self.append_log("🔌 Disconnected radar.")
+                self.set_status_pill("Disconnected", ok=False)
+            else:
+                self.append_log("⚠️ Radar already disconnected")
         except Exception as e:
-            self.append_log(f"❌ Disconnect failed: {e}")
+            self.append_log(f"❌ Disconnect error: {e}")
 
+        # Update UI state
         self.btn_connect.setEnabled(True)
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(False)
